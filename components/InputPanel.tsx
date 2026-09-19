@@ -47,7 +47,7 @@ export function InputPanel({
           <input
             id="identifier"
             type="text"
-            value={identifier}
+            value={identifier ?? ""}
             onChange={(e) => setIdentifier(e.target.value)}
             placeholder="10.1000/xyz123 or 2401.01234"
             autoComplete="off"
