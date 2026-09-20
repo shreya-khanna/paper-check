@@ -1,4 +1,4 @@
-# 📑 Paper Check
+# 📑 Paper Check -- Prayas Hack 2026 Submission by Team SHAG
 
 > **Automated ML Research Methodology & Credibility Auditor**  
 > Fast, grounded auditing for machine learning papers with anti-hallucination quote verification and deterministic credibility scoring.
