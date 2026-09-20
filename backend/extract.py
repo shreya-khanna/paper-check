@@ -154,112 +154,15 @@ def split_into_sections(markdown: str):
 
 
 # ============================================================
-# 5. EXTRACT ONE SECTION WITH GEMINI
+# 5. EXTRACT PAPER CONTEXT WITH GEMINI (CACHED)
 # ============================================================
 
-def extract_section(section_title: str, section_text: str, client):
+from cache import cached, get_hash
+
+def extract_paper_context(paper_markdown: str, client=None) -> dict:
     """
-    Ask Gemini to extract information from ONE section.
-    Gemini returns the same schema every time.
-    """
-    system_instruction = """
-You are extracting factual information from an ML research paper.
-
-Read ONLY the supplied paper section.
-
-Fill the predefined fields with information explicitly stated
-in this section.
-
-Do not guess or infer information.
-
-If a field is not mentioned in this section, write:
-"not reported"
-
-Keep answers concise.
-
-For example:
-- Do not explain what a dataset is.
-- Do not explain what accuracy means.
-- Just extract the information stated by the authors.
-"""
-
-    prompt = f"""
-Paper section: {section_title}
-
-Section content:
-----------------
-{section_text}
-----------------
-
-Extract the relevant information into the predefined schema.
-
-Remember:
-- Only use information explicitly present in this section.
-- Fields unrelated to this section should be "not reported".
-"""
-
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            response_mime_type="application/json",
-            response_schema=ExtractionResult,
-            temperature=0,
-        ),
-    )
-
-    if hasattr(response, "parsed") and response.parsed:
-        if isinstance(response.parsed, BaseModel):
-            return response.parsed.model_dump()
-        return response.parsed
-    return json.loads(response.text)
-
-
-
-# ============================================================
-# 6. MERGE SECTION EXTRACTIONS
-# ============================================================
-
-def merge_extractions(section_results):
-    """
-    Combine the information extracted from all sections.
-
-    If multiple sections contain information for the same field,
-    concatenate the useful information rather than throwing it away.
-    """
-    final = empty_extraction()
-
-    for result in section_results:
-        for field in EXTRACTION_FIELDS:
-            value = result.get(field, "not reported")
-
-            if not value or value == "not reported":
-                continue
-
-            # Nothing has been extracted for this field yet
-            if final[field] == "not reported":
-                final[field] = value
-            # Additional information was found in another section
-            else:
-                if value not in final[field]:
-                    final[field] += "; " + value
-
-    return final
-
-
-# ============================================================
-# 7. MAIN EXTRACTION FUNCTION
-# ============================================================
-
-import time
-
-def extract_paper_context(paper_markdown: str, client=None):
-    """
-    Takes the COMPLETE Docling Markdown and extracts information
-    section by section using Gemini with rate-limit retries.
-
-    No arbitrary character truncation is performed.
+    Extracts structured methodology information from the complete paper markdown
+    in a single comprehensive call with disk caching.
     """
     if client is None:
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -269,41 +172,47 @@ def extract_paper_context(paper_markdown: str, client=None):
             )
         client = genai.Client(api_key=api_key)
 
-    sections = split_into_sections(paper_markdown)
-    print(f"Found {len(sections)} sections in markdown.")
+    cache_key = ("extract_full_v2", MODEL, get_hash(paper_markdown))
 
-    section_results = []
-    for i, (title, text) in enumerate(sections):
-        # Skip references or very brief author headers if text is negligible
-        if title.lower() in ["references", "acknowledgements", "appendix"]:
-            continue
+    def _call():
+        system_instruction = """
+You are extracting factual methodology information from an ML research paper.
 
-        print(f"Extracting section {i + 1}/{len(sections)}: {title}")
-        
-        # Retry loop for rate limits (429)
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                result = extract_section(
-                    section_title=title,
-                    section_text=text,
-                    client=client,
-                )
-                section_results.append(result)
-                time.sleep(1.5)  # respectful delay between calls to stay within free-tier RPM
-                break
-            except Exception as e:
-                err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    wait_time = (attempt + 1) * 8
-                    print(f"  Rate limit hit on '{title}'. Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-                else:
-                    print(f"  Warning: failed extracting section '{title}': {e}")
-                    break
+Read the supplied paper text and fill the predefined fields with information explicitly stated.
+Do not guess or infer information.
+If a field is not mentioned, write "not reported".
+Keep answers concise and factual.
+"""
 
-    final_context = merge_extractions(section_results)
-    return final_context
+        prompt = f"""
+Complete Paper Markdown:
+------------------------
+{paper_markdown}
+------------------------
+
+Extract the methodology details for each field according to the predefined schema.
+"""
+
+        print(f"Extracting structured paper context via Gemini ({len(paper_markdown):,} chars)...")
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                response_schema=ExtractionResult,
+                temperature=0,
+            ),
+        )
+
+        if hasattr(response, "parsed") and response.parsed:
+            if isinstance(response.parsed, BaseModel):
+                return response.parsed.model_dump()
+            return response.parsed
+        return json.loads(response.text)
+
+    return cached(cache_key, _call)
+
 
 
 

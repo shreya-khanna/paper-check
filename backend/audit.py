@@ -113,200 +113,116 @@ def get_gemini_client():
 # 5. RUN AUDIT
 # ============================================================
 
+from cache import cached, get_hash
+
 def run_audit(
     paper_context: dict,
     paper_markdown: str,
     client=None,
 ) -> dict:
-
     if client is None:
         client = get_gemini_client()
 
-    # --------------------------------------------------------
-    # Build questions
-    # --------------------------------------------------------
-
-    questions_block = "\n".join(
-        f'- id="{qid}": {q["question"]}'
-        for qid, q in AUDIT_QUESTIONS.items()
+    cache_key = (
+        "audit_v1",
+        MODEL,
+        get_hash(json.dumps(paper_context, sort_keys=True)),
+        get_hash(paper_markdown),
     )
 
-    # --------------------------------------------------------
-    # System instructions
-    # --------------------------------------------------------
+    def _call():
+        # --------------------------------------------------------
+        # Build questions
+        # --------------------------------------------------------
+        questions_block = "\n".join(
+            f'- id="{qid}": {q["question"]}'
+            for qid, q in AUDIT_QUESTIONS.items()
+        )
 
-    system_instruction = """
+        system_instruction = """
 You are auditing the methodology of an ML research paper.
 
 You are given:
-
 1. A structured summary extracted from the paper.
 2. The complete paper text.
 3. A set of audit questions.
 
-Answer EVERY audit question using ONLY information explicitly
-present in the supplied paper.
+Answer EVERY audit question using ONLY information explicitly present in the supplied paper.
+Do not use outside knowledge. Do not guess.
 
-Do not use outside knowledge.
-Do not guess.
-Do not assume that something was done merely because it is
-standard practice.
+JUDGMENT RULES:
+"supported": The paper clearly provides evidence that the methodology handles the issue correctly.
+"concern": There is evidence suggesting a genuine methodological problem or weakness.
+"insufficient": The paper does not report enough information to determine whether the issue is handled correctly.
+"inconsistency": The paper contains a clear internal contradiction or methodological error.
 
-JUDGMENT RULES
---------------
-
-"supported":
-The paper clearly provides evidence that the methodology
-handles the issue correctly.
-
-"concern":
-There is evidence in the paper suggesting a genuine
-methodological problem or weakness.
-
-"insufficient":
-The paper does not report enough information to determine
-whether the issue is handled correctly.
-
-IMPORTANT:
-Missing information alone is NOT a "concern".
-If the paper simply does not report something, use
-"insufficient".
-
-"inconsistency":
-The paper contains enough information to establish a clear
-contradiction, mismatch, or methodological error within the
-paper itself.
-
-EVIDENCE RULES
---------------
-
-Every judgment except "insufficient" MUST contain an exact
-quote from the paper that supports the judgment.
-
-The quote must be copied verbatim from the supplied paper text.
-
-Do NOT paraphrase the quote.
-
+EVIDENCE RULES:
+Every judgment except "insufficient" MUST contain an exact quote from the paper.
 For "insufficient", use an empty string for quote.
-
 Keep explanations to one or two sentences.
-
 Return one answer for EVERY audit question.
 """
 
-    # --------------------------------------------------------
-    # User prompt
-    # --------------------------------------------------------
-
-    user_content = f"""
+        user_content = f"""
 STRUCTURED PAPER CONTEXT
 ========================
-
 {json.dumps(paper_context, indent=2, ensure_ascii=False)}
-
 
 AUDIT QUESTIONS
 ===============
-
 {questions_block}
-
 
 COMPLETE PAPER TEXT
 ===================
-
 {paper_markdown}
 """
 
-    # --------------------------------------------------------
-    # Call Gemini
-    # --------------------------------------------------------
+        print("\nSending paper to Gemini for audit...")
+        print(f"Paper length: {len(paper_markdown):,} characters")
+        print(f"Number of questions: {len(AUDIT_QUESTIONS)}")
 
-    print("\nSending paper to Gemini for audit...")
-    print(f"Paper length: {len(paper_markdown):,} characters")
-    print(f"Number of questions: {len(AUDIT_QUESTIONS)}")
-
-    import time
-    max_retries = 3
-    response = None
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=user_content,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                    response_schema=AuditResult,
-                    temperature=0,
-                ),
-            )
-            break
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                wait_time = (attempt + 1) * 10
-                print(f"Rate limit hit during audit. Waiting {wait_time}s before retry...")
-                time.sleep(wait_time)
-            else:
-                raise e
-
-
-    # --------------------------------------------------------
-    # Debug response
-    # --------------------------------------------------------
-
-    print("\nGemini audit response received.")
-
-    # --------------------------------------------------------
-    # Parse structured response
-    # --------------------------------------------------------
-
-    if response.parsed is not None:
-        if isinstance(response.parsed, AuditResult):
-            result = response.parsed.model_dump()
-        elif isinstance(response.parsed, BaseModel):
-            result = response.parsed.model_dump()
-        else:
-            result = response.parsed
-    elif response.text:
-        result = json.loads(response.text)
-    else:
-        raise RuntimeError(
-            "Gemini returned neither parsed output nor text."
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                response_schema=AuditResult,
+                temperature=0,
+            ),
         )
 
-    # --------------------------------------------------------
-    # Convert list -> dictionary keyed by question ID
-    # --------------------------------------------------------
+        if response.parsed is not None:
+            if isinstance(response.parsed, AuditResult):
+                result = response.parsed.model_dump()
+            elif isinstance(response.parsed, BaseModel):
+                result = response.parsed.model_dump()
+            else:
+                result = response.parsed
+        elif response.text:
+            result = json.loads(response.text)
+        else:
+            raise RuntimeError("Gemini returned neither parsed output nor text.")
 
-    answers_list = result.get("answers", [])
+        answers_list = result.get("answers", [])
+        answers = {
+            answer["question_id"]: answer
+            for answer in answers_list
+        }
 
-    answers = {
-        answer["question_id"]: answer
-        for answer in answers_list
-    }
+        # Validate question coverage
+        expected_ids = set(AUDIT_QUESTIONS.keys())
+        returned_ids = set(answers.keys())
+        missing = expected_ids - returned_ids
+        if missing:
+            print("\nWARNING: Gemini did not answer these questions:")
+            for qid in sorted(missing):
+                print(f"  - {qid}")
 
-    # --------------------------------------------------------
-    # Validate question coverage
-    # --------------------------------------------------------
+        return answers
 
-    expected_ids = set(AUDIT_QUESTIONS.keys())
-    returned_ids = set(answers.keys())
+    return cached(cache_key, _call)
 
-    missing = expected_ids - returned_ids
-    extra = returned_ids - expected_ids
-
-    if missing:
-        print("\nWARNING: Gemini did not answer these questions:")
-        for qid in sorted(missing):
-            print(f"  - {qid}")
-
-    if extra:
-        print("\nWARNING: Gemini returned unknown question IDs:")
-        for qid in sorted(extra):
-            print(f"  - {qid}")
-
-    return answers
 
 
 # ============================================================
