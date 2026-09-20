@@ -2,26 +2,122 @@
   "q1_population_scope": {
     "question": "What population or distribution is the scientific claim about, and why was this population or distribution chosen for the study?"
   },
+  "q1a_study_goals_population": {
+    "question": "State the population or distribution about which the scientific claim is made."
+  },
+  "q1b_population_motivation": {
+    "question": "Describe the motivation for choosing this population or distribution *(1a.)*."
+  },
+  "q1c_ml_motivation": {
+    "question": "Describe the motivation for the use of ML methods in the study."
+  },
   "q2_ml_motivation": {
     "question": "What motivated the use of machine learning methods for this task, and how does the problem formulation align with the study goals?"
+  },
+  "q2a_dataset_training_eval": {
+    "question": "Describe the dataset used for training and evaluating the model and provide a link or DOI to uniquely identify the dataset."
+  },
+  "q2b_code_training_eval": {
+    "question": "Provide details about the code used to train and evaluate the model and produce the results reported in the paper along with link or DOI to uniquely identify the version of the code used."
+  },
+  "q2c_computing_infrastructure": {
+    "question": "Describe the computing infrastructure used."
+  },
+  "q2d_readme_instructions": {
+    "question": "Provide a README file which contains instructions for generating the results using the provided dataset and code."
+  },
+  "q2e_reproduction_script": {
+    "question": "Provide a reproduction script to produce all results reported in the paper."
   },
   "q3_data_sources": {
     "question": "What are the training and evaluation datasets, when and how were they collected, what are their sources and annotation procedures, and how are they documented?"
   },
+  "q3a_data_sources_and_annotations": {
+    "question": "Describe source(s) of data, separately for the training and evaluation datasets (if applicable), along with the time when the dataset(s) are collected, the source and process of ground-truth annotations, and other data documentation."
+  },
+  "q3b_sampling_frame": {
+    "question": "State the distribution or set from which the dataset is sampled (i.e., the sampling frame)."
+  },
+  "q3c_dataset_usefulness": {
+    "question": "Justify why the dataset is useful for the modeling task at hand."
+  },
+  "q3d_outcome_variable": {
+    "question": "State the outcome variable of the model, along with descriptive statistics (split by class for a categorical outcome variable) and its definition."
+  },
+  "q3e_sample_size_outcome_frequencies": {
+    "question": "State the sample size and outcome frequencies."
+  },
+  "q3f_missing_data_rate": {
+    "question": "State the percentage of missing data, split by class for a categorical outcome variable."
+  },
+  "q3g_representativeness": {
+    "question": "Justify why the distribution or set from which the dataset is drawn *(3b.)* is representative of the one about which the scientific claim is being made *(1a.)*."
+  },
   "q4_sampling_representativeness": {
     "question": "From what sampling frame or distribution were the data drawn, and why is that sample representative of the population about which the claim is made?"
+  },
+  "q4a_sample_exclusions": {
+    "question": "Describe whether any samples are excluded with a rationale for why they are excluded."
+  },
+  "q4b_impossible_or_corrupt_samples": {
+    "question": "Describe how impossible or corrupt samples are dealt with."
+  },
+  "q4c_data_transformations": {
+    "question": "Describe all transformations of the dataset from its raw form *(3a.)* to the form used in the model, for instance, treatment of missing data and normalization—preferably through a flow chart."
   },
   "q5_reproducibility": {
     "question": "Are the dataset, code, model version, software environment, and computing infrastructure clearly reported and sufficiently documented to reproduce the reported results?"
   },
+  "q5a_all_models_trained": {
+    "question": "Describe, in detail, all models trained."
+  },
+  "q5b_model_justification": {
+    "question": "Justify the choice of model types implemented."
+  },
+  "q5c_evaluation_method": {
+    "question": "Describe the method for evaluating the model(s) reported in the paper, including details of train-test splits or cross-validation folds."
+  },
+  "q5d_model_selection": {
+    "question": "Describe the method for selecting the model(s) reported in the paper."
+  },
+  "q5e_hyperparameter_tuning": {
+    "question": "For the model(s) reported in the paper, specify details about the hyperparameter tuning."
+  },
+  "q5f_appropriate_baselines": {
+    "question": "Justify that model comparisons are against appropriate baselines."
+  },
   "q6_preprocessing": {
     "question": "What data exclusions, missing-data handling, normalization, cleaning, and other preprocessing steps were applied, and are these procedures clearly described and justified?"
+  },
+  "q6a_preprocessing_train_test separation": {
+    "question": "Justify that preprocessing (Module 4) and modeling (Module 5) steps only use information from the training dataset (and not the test dataset)."
+  },
+  "q6b_dependencies_duplicates": {
+    "question": "Describe methods used to address dependencies or duplicates between the training and test datasets (e.g. different samples from the same patients are kept in the same dataset partition)."
+  },
+  "q6c_feature_legitimacy": {
+    "question": "Justify that each feature or input used in the model is legitimate for the task at hand and does not lead to leakage."
   },
   "q7_modeling_details": {
     "question": "What models were trained, why were these model types selected, and what were the training setup, hyperparameter tuning, and model-selection procedures?"
   },
+  "q7a_metrics_used": {
+    "question": "State all metrics used to assess and compare model performance (e.g., accuracy, AUROC etc.). Justify that the metric used to select the final model is suitable for the task."
+  },
+  "q7b_uncertainty_estimates": {
+    "question": "State uncertainty estimates (e.g., confidence intervals, standard deviations), and give details of how these are calculated."
+  },
+  "q7c_statistical_tests": {
+    "question": "Justify the choice of statistical tests (if used) and a check for the assumptions of the statistical test."
+  },
   "q8_baselines_and_evaluation": {
     "question": "Are the evaluation protocol, train/test splits or cross-validation strategy, baselines, and comparison conditions appropriate and fairly comparable for the task?"
+  },
+  "q8a_external_validity": {
+    "question": "Describe evidence of external validity."
+  },
+  "q8b_expected_failure_contexts": {
+    "question": "Describe contexts in which the authors do not expect the study’s findings to hold."
   },
   "q9_leakage": {
     "question": "Is there any risk of data leakage through preprocessing, feature selection, test-set contamination, duplicate samples, or use of information unavailable at prediction time?"
