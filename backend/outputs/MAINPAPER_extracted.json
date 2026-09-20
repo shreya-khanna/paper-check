@@ -10,3 +10,8 @@
   "main_claims": "It is possible to use deep learning to accurately predict road safety directly from raw satellite imagery. A deep learning-based mapping approach is proposed that leverages open data to learn from raw satellite imagery robust deep models able to predict accurate city-scale road safety maps at an affordable cost.; Proposing a deep learning-based mapping approach for predicting city-scale road safety maps from raw satellite imagery; Proposing the idea of obtaining labeled satellite images from open data; Making publicly available a deep model for predicting road safety learned from over 647 thousand traffic-accident reports collected by the NYPD; Predicting for the city of Denver a city-scale road safety map with an accuracy of 73%.; The proposed work is the first to attempt using machine learning to predict city-scale road safety maps directly from raw satellite imagery. The work aims to generate maps that help inform city-planning decision-making and policy and eventually improve road safety for cities where proper data collection is unaffordable. Using satellite imagery is more practical than GPS data because satellite images are more ubiquitous and freely available, and GPS data is unreliable in low- and middle-income countries.; Models learned from this data are assumed to be highly accurate because reports were collected manually by human experts.; model and understand what a satellite map of a city tells about road safety; predict the level of road safety based on both frequency and severity of previous accidents occurred within a limited geographic area",
   "limitations": "traffic accidents occur due to complex reasons which cannot be pinned down to a single one, making it extremely challenging to predict them"
 }
+
+
+
+
+

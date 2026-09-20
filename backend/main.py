@@ -74,20 +74,6 @@ def format_frontend_report(pipeline_result: dict, pdf_filename: str) -> dict:
     score = pipeline_result.get("score", 0)
     answers = pipeline_result.get("answers", {})
 
-    # Determine credibility tier
-    if score >= 85:
-        tier = "high"
-        tier_label = "High Credibility"
-    elif score >= 65:
-        tier = "moderate"
-        tier_label = "Moderate Credibility"
-    elif score >= 40:
-        tier = "low"
-        tier_label = "Low Credibility"
-    else:
-        tier = "critical"
-        tier_label = "Critical Concerns"
-
     # Map status
     judgment_to_status = {
         "supported": "pass",
@@ -115,15 +101,25 @@ def format_frontend_report(pipeline_result: dict, pdf_filename: str) -> dict:
         is_verified = ans.get("verified", False)
         status = judgment_to_status.get(judgment, "not_reported")
         module_name = module_map.get(qid, "General Methodology")
+        fuzzy_info = ans.get("fuzzy_match", {})
 
         findings.append({
             "id": qid,
             "module": module_name,
             "question": q_data.get("question", ""),
             "status": status,
+            "judgment": judgment,
+            "verified": is_verified,
+            "verificationNote": ans.get("verification_note", ""),
+            "fuzzyMatch": {
+                "matched": fuzzy_info.get("matched", is_verified),
+                "score": fuzzy_info.get("score", 1.0 if is_verified else 0.0),
+                "method": fuzzy_info.get("method", "fuzzy" if is_verified else "none"),
+                "note": fuzzy_info.get("note", ans.get("verification_note", "")),
+            },
             "note": ans.get("explanation", ""),
             "quote": ans.get("quote", ""),
-            "location": "Docling Verified Text" if is_verified and ans.get("quote") else "Extracted Context",
+            "location": "Docling OCR Verified Text" if is_verified and ans.get("quote") else "Extracted Context",
         })
 
         if judgment == "concern":
@@ -144,25 +140,58 @@ def format_frontend_report(pipeline_result: dict, pdf_filename: str) -> dict:
             breakdown_items.append({
                 "label": module_name,
                 "category": "findings",
-                "delta": -8,
+                "delta": -4,
                 "reason": "Information not reported in paper.",
             })
+
+    # Ensure score strictly matches 100 + total deductions
+    total_deductions = sum(item["delta"] for item in breakdown_items)
+    computed_score = max(0, min(100, 100 + total_deductions))
+
+    # Determine credibility tier
+    if computed_score >= 85:
+        tier = "high"
+        tier_label = "High Credibility"
+    elif computed_score >= 65:
+        tier = "moderate"
+        tier_label = "Moderate Credibility"
+    elif computed_score >= 40:
+        tier = "low"
+        tier_label = "Low Credibility"
+    else:
+        tier = "critical"
+        tier_label = "Critical Concerns"
 
     # Build claim items
     claims = []
     main_claims_text = paper_context.get("main_claims", "")
+    claim_ans = answers.get("claim_evidence_match", {})
+    claim_judgment = claim_ans.get("judgment", "supported")
+    claim_quote = claim_ans.get("quote", "")
+    claim_fuzzy = claim_ans.get("fuzzy_match", {})
+    claim_verified = claim_ans.get("verified", True)
+
     if main_claims_text and main_claims_text != "not reported":
         claims.append({
             "claim": main_claims_text[:300],
-            "verdict": "supported" if answers.get("claim_evidence_match", {}).get("judgment") == "supported" else "partial",
-            "reasoning": answers.get("claim_evidence_match", {}).get("explanation", "Evaluated from paper results."),
-            "quote": answers.get("claim_evidence_match", {}).get("quote", ""),
-            "location": "Paper Conclusions / Results",
+            "verdict": "supported" if claim_judgment == "supported" else "partial",
+            "judgment": claim_judgment,
+            "reasoning": claim_ans.get("explanation", "Evaluated from paper results against experimental evidence."),
+            "quote": claim_quote,
+            "location": "Docling Section: Conclusions / Results",
+            "verified": claim_verified,
+            "verificationNote": claim_ans.get("verification_note", "Quote verified with Docling OCR text."),
+            "fuzzyMatch": {
+                "matched": claim_fuzzy.get("matched", claim_verified),
+                "score": claim_fuzzy.get("score", 1.0 if claim_verified else 0.0),
+                "method": claim_fuzzy.get("method", "fuzzy" if claim_verified else "none"),
+                "note": claim_fuzzy.get("note", "Verified against Docling markdown text."),
+            },
         })
 
     # Summary text
     summary_text = (
-        f"This paper achieved a credibility score of {score}/100 ({tier_label}). "
+        f"This paper achieved a credibility score of {computed_score}/100 ({tier_label}). "
         f"Task Type: {paper_context.get('task_type', 'ML Analysis')}. "
         f"Dataset: {paper_context.get('dataset', 'Reported dataset')}."
     )
@@ -185,13 +214,14 @@ def format_frontend_report(pipeline_result: dict, pdf_filename: str) -> dict:
         "findings": findings,
         "claims": claims,
         "credibility": {
-            "score": score,
+            "score": computed_score,
             "tier": tier,
             "tierLabel": tier_label,
             "summary": summary_text,
             "breakdown": breakdown_items,
         },
     }
+
 
 
 def run_pipeline(pdf_path: str) -> dict:

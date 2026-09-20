@@ -1,9 +1,9 @@
 """
-Stage 4.5: Verify the audit answers BEFORE they're scored.
+Stage 4.5: Verify the audit answers and claims BEFORE they're scored.
 
-Input:  answers dict (from audit.py) + paper_markdown (the source text)
-Output: same-shaped answers dict, but with a "verified" bool added to each,
-        and any answer that fails verification is DOWNGRADED to "insufficient"
+Input:  answers dict (from audit.py) + claims list (from extract.py) + paper_markdown (source text)
+Output: same-shaped answers dict & claims with "verified" bool and "fuzzy_match" metadata added,
+        and any finding that fails verification is DOWNGRADED to "insufficient"
         so a hallucinated quote can never inflate the score.
 
 No LLM call here - this is deterministic checking, same philosophy as score.py.
@@ -28,38 +28,77 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
-def _quote_found_in_source(quote: str, source_text: str) -> bool:
+def check_quote_in_source(quote: str, source_text: str, threshold: float = FUZZY_MATCH_THRESHOLD) -> dict:
     """
     Checks whether `quote` genuinely appears in `source_text`.
     Tries exact substring first (fast, strict). Falls back to a fuzzy sliding
     window so small whitespace/OCR differences from Docling don't cause false
     failures - but a fabricated quote still won't pass.
+
+    Returns a structured dictionary with match status, method, and score.
     """
     if not quote or not quote.strip():
-        return False
+        return {
+            "matched": False,
+            "method": "none",
+            "score": 0.0,
+            "note": "Empty quote provided.",
+        }
 
     norm_quote = _normalize(quote)
     norm_source = _normalize(source_text)
 
     # 1. Exact substring match - the common, cheap case
     if norm_quote in norm_source:
-        return True
+        return {
+            "matched": True,
+            "method": "exact",
+            "score": 1.0,
+            "note": "Exact substring match confirmed in source text.",
+        }
 
-    # 2. Fuzzy fallback: slide a window of source text roughly the quote's
-    #    length and check similarity. Catches near-verbatim quotes without
-    #    letting a fully invented sentence through.
+    # 2. Fuzzy fallback: slide a window of source text roughly the quote's length
     window = len(norm_quote)
     if window < 8:  # too short to fuzzy-match reliably; require exact match
-        return False
+        return {
+            "matched": False,
+            "method": "none",
+            "score": 0.0,
+            "note": "Quote too short for fuzzy matching; exact match failed.",
+        }
 
+    best_ratio = 0.0
+    best_chunk = ""
     step = max(1, window // 4)
     for i in range(0, max(1, len(norm_source) - window), step):
         chunk = norm_source[i:i + window]
         ratio = difflib.SequenceMatcher(None, norm_quote, chunk).ratio()
-        if ratio >= FUZZY_MATCH_THRESHOLD:
-            return True
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_chunk = chunk
 
-    return False
+    if best_ratio >= threshold:
+        return {
+            "matched": True,
+            "method": "fuzzy",
+            "score": round(best_ratio, 3),
+            "note": f"Fuzzy sequence match confirmed (similarity: {int(best_ratio * 100)}%, threshold ≥ {int(threshold * 100)}%).",
+            "matched_snippet": best_chunk[:200],
+        }
+
+    return {
+        "matched": False,
+        "method": "fuzzy",
+        "score": round(best_ratio, 3),
+        "note": f"Quote not found in source text (best similarity: {int(best_ratio * 100)}%, threshold ≥ {int(threshold * 100)}%).",
+        "matched_snippet": best_chunk[:200] if best_chunk else "",
+    }
+
+
+def _quote_found_in_source(quote: str, source_text: str) -> bool:
+    """Legacy boolean wrapper for backward compatibility."""
+    res = check_quote_in_source(quote, source_text)
+    return res["matched"]
 
 
 def verify_answers(answers: dict, paper_markdown: str) -> dict:
@@ -86,6 +125,12 @@ def verify_answers(answers: dict, paper_markdown: str) -> dict:
                 "explanation": "Model did not answer this question.",
                 "verified": False,
                 "verification_note": "missing_answer",
+                "fuzzy_match": {
+                    "matched": False,
+                    "method": "none",
+                    "score": 0.0,
+                    "note": "Missing answer from model.",
+                },
             }
             continue
 
@@ -95,9 +140,16 @@ def verify_answers(answers: dict, paper_markdown: str) -> dict:
 
         # Check 2: schema validity
         if judgment not in VALID_JUDGMENTS:
+            ans["raw_judgment"] = judgment
             ans["judgment"] = "insufficient"
             ans["verified"] = False
             ans["verification_note"] = f"invalid_judgment:{judgment}"
+            ans["fuzzy_match"] = {
+                "matched": False,
+                "method": "none",
+                "score": 0.0,
+                "note": f"Invalid judgment: {judgment}",
+            }
             verified_answers[qid] = ans
             continue
 
@@ -106,20 +158,64 @@ def verify_answers(answers: dict, paper_markdown: str) -> dict:
             # no quote required - this is a legitimate, honest answer
             ans["verified"] = True
             ans["verification_note"] = "ok_no_evidence_needed"
+            ans["fuzzy_match"] = {
+                "matched": True,
+                "method": "no_evidence_needed",
+                "score": 1.0,
+                "note": "Legitimate insufficient finding; no evidence quote required.",
+            }
         else:
-            if _quote_found_in_source(quote, paper_markdown):
+            match_res = check_quote_in_source(quote, paper_markdown)
+            ans["fuzzy_match"] = match_res
+            if match_res["matched"]:
                 ans["verified"] = True
-                ans["verification_note"] = "ok_quote_confirmed"
+                ans["verification_note"] = f"ok_quote_confirmed ({match_res['method']}, {int(match_res['score'] * 100)}%)"
             else:
                 # The model claimed a quote that isn't actually in the paper.
                 # Downgrade rather than trust it - this is the hallucination guard.
+                ans["raw_judgment"] = judgment
                 ans["judgment"] = "insufficient"
                 ans["verified"] = False
-                ans["verification_note"] = "quote_not_found_in_source"
+                ans["verification_note"] = f"quote_not_found_in_source (best similarity: {int(match_res['score'] * 100)}%)"
 
         verified_answers[qid] = ans
 
     return verified_answers
+
+
+def verify_claims(claims: list[dict], paper_markdown: str) -> list[dict]:
+    """
+    Verifies extracted claims against the paper markdown using fuzzy matching.
+    """
+    verified_claims = []
+    for c in claims:
+        item = dict(c)
+        quote = item.get("quote", "")
+        verdict = item.get("verdict", "supported")
+        judgment = item.get("judgment", verdict if verdict in VALID_JUDGMENTS else ("supported" if verdict == "supported" else "concern"))
+        item["judgment"] = judgment
+
+        if not quote or quote.strip() == "" or judgment == "insufficient":
+            item["verified"] = True
+            item["verification_note"] = "ok_no_evidence_needed"
+            item["fuzzy_match"] = {
+                "matched": True,
+                "method": "no_evidence_needed",
+                "score": 1.0,
+                "note": "No quote required for this claim.",
+            }
+        else:
+            match_res = check_quote_in_source(quote, paper_markdown)
+            item["fuzzy_match"] = match_res
+            item["verified"] = match_res["matched"]
+            if match_res["matched"]:
+                item["verification_note"] = f"ok_quote_confirmed ({match_res['method']}, {int(match_res['score'] * 100)}%)"
+            else:
+                item["verification_note"] = f"quote_not_found_in_source (best match: {int(match_res['score'] * 100)}%)"
+
+        verified_claims.append(item)
+
+    return verified_claims
 
 
 if __name__ == "__main__":
@@ -175,13 +271,15 @@ if __name__ == "__main__":
 
     result = verify_answers(answers, source_text)
 
-    print("\n--- VERIFICATION RESULTS ---")
+    print("\n--- VERIFICATION & FUZZY MATCHING RESULTS ---")
     for qid, res in result.items():
         q_text = AUDIT_QUESTIONS.get(qid, {}).get("question", "No question text found")
         verified_status = "[PASS]" if res.get("verified") else "[FAIL - Downgraded]"
+        fuzzy_info = res.get("fuzzy_match", {})
         print(f"\n[{qid}]")
         print(f"  Question:    {q_text}")
         print(f"  Judgment:    {res.get('judgment')} ({verified_status})")
+        print(f"  Fuzzy Match: {fuzzy_info.get('method')} (score: {fuzzy_info.get('score')})")
         print(f"  Note:        {res.get('verification_note')}")
         if res.get("quote"):
             print(f"  Quote:       \"{res.get('quote')}\"")

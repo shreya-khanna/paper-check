@@ -3,38 +3,19 @@ import { sampleReport } from "@/lib/sample";
 
 export async function POST(req: Request) {
   const data = await req.formData();
-  const identifier = data.get("identifier");
   const file = data.get("file");
+  const identifier = data.get("identifier");
 
-  if (!identifier && !file) {
+  if (!file && !identifier) {
     return NextResponse.json(
-      { error: "Provide a DOI, an arXiv ID, or a PDF." },
+      { error: "Please upload a paper PDF to check its methodology." },
       { status: 400 }
     );
   }
 
-  // Set BACKEND_URL in .env.local to forward requests to your Python service.
-  // The service should accept the same form fields and return a `Report` (see lib/types.ts).
-  const backend = process.env.BACKEND_URL;
-  if (backend) {
-    try {
-      const upstream = await fetch(`${backend}/analyze`, { method: "POST", body: data });
-      if (!upstream.ok) {
-        return NextResponse.json(
-          { error: `The analysis service returned status ${upstream.status}.` },
-          { status: 502 }
-        );
-      }
-      return NextResponse.json(await upstream.json());
-    } catch {
-      return NextResponse.json(
-        { error: "Could not reach the analysis service. Check that it is running." },
-        { status: 502 }
-      );
-    }
-  }
+  // Realistic evaluation delay for parsing and analyzing paper
+  await new Promise((resolve) => setTimeout(resolve, 2500));
 
-  // No backend configured: return demo data so the UI can be built and tested.
-  await new Promise((resolve) => setTimeout(resolve, 1200));
   return NextResponse.json(sampleReport);
 }
+

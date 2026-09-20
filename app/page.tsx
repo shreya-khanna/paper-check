@@ -40,7 +40,7 @@ export default function Home() {
         <section className="intro">
           <h1>Check a paper&apos;s methods before you cite it</h1>
           <p>
-            Enter a DOI or arXiv ID, or upload a PDF. You get a checklist of what the paper
+            Upload a research paper PDF. You get an automated checklist of what the paper
             reports, where its methods look inconsistent, and whether its claims match what it
             tested.
           </p>
@@ -50,14 +50,13 @@ export default function Home() {
 
         {loading && (
           <p className="status-line" role="status">
-            Reading the paper and checking its methods. This can take a minute.
+            Reading the paper and auditing its methods. This takes a few seconds...
           </p>
         )}
 
         {error && (
           <div className="notice" role="alert">
-            <strong>The check did not finish.</strong> {error} Try again, or upload the PDF
-            instead.
+            <strong>The check did not finish.</strong> {error}
           </div>
         )}
 
@@ -66,3 +65,4 @@ export default function Home() {
     </>
   );
 }
+
