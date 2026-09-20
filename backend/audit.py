@@ -22,16 +22,14 @@ judgment is always one of:
 
 import os
 import sys
-import glob
 import json
+import re
+import time
 
 from dotenv import load_dotenv, find_dotenv
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-
-from questions import AUDIT_QUESTIONS
-
 
 # ============================================================
 # 1. LOAD ENVIRONMENT
@@ -43,12 +41,7 @@ load_dotenv("../.env")
 load_dotenv(".env.local")
 load_dotenv("../.env.local")
 
-
-# ============================================================
-# 2. GEMINI CONFIGURATION
-# ============================================================
-
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 JUDGMENTS = [
     "supported",
@@ -59,6 +52,20 @@ JUDGMENTS = [
 
 
 # ============================================================
+# 2. READ QUESTIONS FROM JSON
+# ============================================================
+
+def load_audit_questions():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    json_path = os.path.join(base_dir, "AUDIT_QUESTIONS.JSON")
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    return data
+
+
+# ============================================================
 # 3. OUTPUT SCHEMA
 # ============================================================
 
@@ -66,27 +73,18 @@ class AuditAnswer(BaseModel):
     question_id: str = Field(
         description="The ID of the audit question being answered."
     )
-
     judgment: str = Field(
-        description=(
-            "One of: supported, concern, insufficient, inconsistency"
-        )
+        description="One of: supported, concern, insufficient, inconsistency"
     )
-
     quote: str = Field(
         description=(
-            "Exact sentence or sentences from the paper supporting "
-            "the judgment. Empty string if judgment is insufficient."
+            "Exact sentence or sentences from the paper supporting the judgment. "
+            "Empty string if judgment is insufficient."
         )
     )
-
     explanation: str = Field(
         description="One or two sentences explaining the judgment."
     )
-
-
-class AuditResult(BaseModel):
-    answers: list[AuditAnswer]
 
 
 # ============================================================
@@ -94,141 +92,167 @@ class AuditResult(BaseModel):
 # ============================================================
 
 def get_gemini_client():
-    """
-    Create Gemini client using GEMINI_API_KEY from .env.
-    """
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-
     if not api_key:
         raise ValueError(
             "GEMINI_API_KEY not found.\n"
             "Add it to your .env file:\n\n"
             "GEMINI_API_KEY=your_key_here"
         )
-
     return genai.Client(api_key=api_key)
 
 
 # ============================================================
-# 5. RUN AUDIT
+# 5. SECTION SELECTION FOR RELEVANT PAPER EXCERPTS
 # ============================================================
 
-def run_audit(
+QUESTION_SECTION_HINTS = {
+    "q1_population_scope": [
+        "population", "participants", "study population", "sample",
+        "setting", "inclusion", "recruitment", "distribution"
+    ],
+    "q2_ml_motivation": [
+        "introduction", "motivation", "background", "objective",
+        "problem formulation", "machine learning", "ml"
+    ],
+    "q3_data_sources": [
+        "dataset", "data collection", "data source", "annotation",
+        "labeling", "training data", "evaluation data"
+    ],
+    "q4_sampling_representativeness": [
+        "sampling", "sample", "population", "distribution", "representativeness",
+        "frame", "inclusion"
+    ],
+    "q5_reproducibility": [
+        "reproducibility", "code", "software", "implementation",
+        "resources", "hardware", "infrastructure", "availability"
+    ],
+    "q6_preprocessing": [
+        "methods", "preprocessing", "data cleaning", "missing data",
+        "normalization", "filtering", "exclusion", "feature engineering"
+    ],
+    "q7_modeling_details": [
+        "methods", "model", "architecture", "training", "hyperparameters",
+        "validation", "selection", "baseline"
+    ],
+    "q8_baselines_and_evaluation": [
+        "evaluation", "results", "baseline", "validation", "split",
+        "cross-validation", "test set", "performance"
+    ],
+    "q9_leakage": [
+        "validation", "train", "test", "data leakage", "preprocessing",
+        "feature selection", "duplicates", "contamination"
+    ],
+    "q10_metrics_uncertainty": [
+        "metrics", "results", "uncertainty", "confidence interval",
+        "standard deviation", "statistics", "significance", "test"
+    ],
+    "q11_claims_generalizability": [
+        "conclusion", "discussion", "limitations", "generalizability",
+        "external validity", "results", "findings"
+    ],
+}
+
+def split_markdown_into_sections(markdown: str):
+    """
+    Split markdown into (heading, text) sections using headings.
+    """
+    sections = []
+    blocks = re.split(r"(?m)^(#{1,6})\\s+", markdown)
+
+    if len(blocks) <= 1:
+        return [("document", markdown)]
+
+    for i in range(1, len(blocks), 2):
+        heading = blocks[i].strip()
+        body = blocks[i + 1].strip() if i + 1 < len(blocks) else ""
+        if heading:
+            sections.append((heading, body))
+
+    return sections
+
+def get_relevant_paper_excerpt(question_id: str, paper_markdown: str, max_chars: int = 12000):
+    sections = split_markdown_into_sections(paper_markdown)
+    hints = QUESTION_SECTION_HINTS.get(question_id, [])
+
+    selected = []
+    for heading, text in sections:
+        heading_lower = heading.lower()
+        text_lower = text.lower()
+        score = 0
+
+        for hint in hints:
+            h = hint.lower()
+            if h in heading_lower or h in text_lower:
+                score += 1
+
+        if score > 0:
+            selected.append((score, heading, text))
+
+    if not selected:
+        return paper_markdown[:max_chars]
+
+    selected.sort(key=lambda x: x[0], reverse=True)
+    excerpt_parts = []
+
+    for _, heading, text in selected[:4]:
+        excerpt_parts.append(f"## {heading}\n{text}")
+
+    excerpt = "\n\n".join(excerpt_parts)
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[:max_chars]
+
+    return excerpt
+
+
+# ============================================================
+# 6. RUN AUDIT
+# ============================================================
+
+def run_single_question(
+    client,
+    question_id: str,
+    question: str,
     paper_context: dict,
     paper_markdown: str,
-    client=None,
-) -> dict:
-
-    if client is None:
-        client = get_gemini_client()
-
-    # --------------------------------------------------------
-    # Build questions
-    # --------------------------------------------------------
-
-    questions_block = "\n".join(
-        f'- id="{qid}": {q["question"]}'
-        for qid, q in AUDIT_QUESTIONS.items()
-    )
-
-    # --------------------------------------------------------
-    # System instructions
-    # --------------------------------------------------------
+):
+    relevant_excerpt = get_relevant_paper_excerpt(question_id, paper_markdown)
 
     system_instruction = """
-You are auditing the methodology of an ML research paper.
+You are auditing one methodology question from an ML research paper.
 
-You are given:
+Use ONLY information explicitly present in the supplied excerpt.
+Do not use outside knowledge, guess, or assume standard practices.
 
-1. A structured summary extracted from the paper.
-2. The complete paper text.
-3. A set of audit questions.
+Judgments:
+- supported: the paper clearly provides evidence that the issue is handled correctly
+- concern: the paper provides evidence of a methodological weakness
+- insufficient: the paper does not provide enough information
+- inconsistency: the paper contains a clear internal contradiction or mismatch
 
-Answer EVERY audit question using ONLY information explicitly
-present in the supplied paper.
+Missing information alone must be classified as insufficient.
 
-Do not use outside knowledge.
-Do not guess.
-Do not assume that something was done merely because it is
-standard practice.
-
-JUDGMENT RULES
---------------
-
-"supported":
-The paper clearly provides evidence that the methodology
-handles the issue correctly.
-
-"concern":
-There is evidence in the paper suggesting a genuine
-methodological problem or weakness.
-
-"insufficient":
-The paper does not report enough information to determine
-whether the issue is handled correctly.
-
-IMPORTANT:
-Missing information alone is NOT a "concern".
-If the paper simply does not report something, use
-"insufficient".
-
-"inconsistency":
-The paper contains enough information to establish a clear
-contradiction, mismatch, or methodological error within the
-paper itself.
-
-EVIDENCE RULES
---------------
-
-Every judgment except "insufficient" MUST contain an exact
-quote from the paper that supports the judgment.
-
-The quote must be copied verbatim from the supplied paper text.
-
-Do NOT paraphrase the quote.
-
-For "insufficient", use an empty string for quote.
-
-Keep explanations to one or two sentences.
-
-Return one answer for EVERY audit question.
+For every judgment except insufficient, provide an exact verbatim quote
+from the paper. For insufficient, quote must be an empty string.
+Keep the explanation to one or two sentences.
 """
-
-    # --------------------------------------------------------
-    # User prompt
-    # --------------------------------------------------------
 
     user_content = f"""
 STRUCTURED PAPER CONTEXT
 ========================
-
 {json.dumps(paper_context, indent=2, ensure_ascii=False)}
 
+AUDIT QUESTION
+==============
+Question ID: {question_id}
+Question: {question}
 
-AUDIT QUESTIONS
-===============
-
-{questions_block}
-
-
-COMPLETE PAPER TEXT
-===================
-
-{paper_markdown}
+RELEVANT PAPER EXCERPT
+======================
+{relevant_excerpt}
 """
 
-    # --------------------------------------------------------
-    # Call Gemini
-    # --------------------------------------------------------
-
-    print("\nSending paper to Gemini for audit...")
-    print(f"Paper length: {len(paper_markdown):,} characters")
-    print(f"Number of questions: {len(AUDIT_QUESTIONS)}")
-
-    import time
-    max_retries = 3
-    response = None
-    for attempt in range(max_retries):
+    for attempt in range(3):
         try:
             response = client.models.generate_content(
                 model=MODEL,
@@ -236,88 +260,74 @@ COMPLETE PAPER TEXT
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                     response_mime_type="application/json",
-                    response_schema=AuditResult,
+                    response_schema=AuditAnswer,
                     temperature=0,
                 ),
             )
-            break
+
+            if response.parsed is not None:
+                if isinstance(response.parsed, BaseModel):
+                    return response.parsed.model_dump()
+                return response.parsed
+
+            if response.text:
+                return json.loads(response.text)
+
+            raise RuntimeError(f"Empty response for audit question {question_id}")
+
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            error = str(e)
+
+            if "429" in error or "RESOURCE_EXHAUSTED" in error:
                 wait_time = (attempt + 1) * 10
-                print(f"Rate limit hit during audit. Waiting {wait_time}s before retry...")
+                print(f"Rate limit for {question_id}. Waiting {wait_time}s...")
                 time.sleep(wait_time)
             else:
-                raise e
+                raise
+
+    raise RuntimeError(
+        f"Failed to answer audit question {question_id} after retries"
+    )
 
 
-    # --------------------------------------------------------
-    # Debug response
-    # --------------------------------------------------------
+def run_audit(paper_context: dict, paper_markdown: str, client=None) -> dict:
+    if client is None:
+        client = get_gemini_client()
 
-    print("\nGemini audit response received.")
+    AUDIT_QUESTIONS = load_audit_questions()
+    answers = {}
 
-    # --------------------------------------------------------
-    # Parse structured response
-    # --------------------------------------------------------
+    print("\nRunning one Gemini request per audit question...")
+    print(f"Paper length: {len(paper_markdown):,} characters")
+    print(f"Number of questions: {len(AUDIT_QUESTIONS)}")
 
-    if response.parsed is not None:
-        if isinstance(response.parsed, AuditResult):
-            result = response.parsed.model_dump()
-        elif isinstance(response.parsed, BaseModel):
-            result = response.parsed.model_dump()
-        else:
-            result = response.parsed
-    elif response.text:
-        result = json.loads(response.text)
-    else:
-        raise RuntimeError(
-            "Gemini returned neither parsed output nor text."
+    for index, (question_id, question_data) in enumerate(
+        AUDIT_QUESTIONS.items(),
+        start=1,
+    ):
+        print(f"[{index}/{len(AUDIT_QUESTIONS)}] Auditing {question_id}...")
+
+        answer = run_single_question(
+            client=client,
+            question_id=question_id,
+            question=question_data["question"],
+            paper_context=paper_context,
+            paper_markdown=paper_markdown,
         )
 
-    # --------------------------------------------------------
-    # Convert list -> dictionary keyed by question ID
-    # --------------------------------------------------------
-
-    answers_list = result.get("answers", [])
-
-    answers = {
-        answer["question_id"]: answer
-        for answer in answers_list
-    }
-
-    # --------------------------------------------------------
-    # Validate question coverage
-    # --------------------------------------------------------
-
-    expected_ids = set(AUDIT_QUESTIONS.keys())
-    returned_ids = set(answers.keys())
-
-    missing = expected_ids - returned_ids
-    extra = returned_ids - expected_ids
-
-    if missing:
-        print("\nWARNING: Gemini did not answer these questions:")
-        for qid in sorted(missing):
-            print(f"  - {qid}")
-
-    if extra:
-        print("\nWARNING: Gemini returned unknown question IDs:")
-        for qid in sorted(extra):
-            print(f"  - {qid}")
+        answer["question_id"] = question_id
+        answers[question_id] = answer
 
     return answers
 
 
 # ============================================================
-# 6. COMMAND LINE ENTRY POINT
+# 7. COMMAND LINE ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
     from pdf_parser import parse_paper
     from extract import extract_paper_context
-
-
 
     if len(sys.argv) < 2:
         print("Usage:")
@@ -326,9 +336,6 @@ if __name__ == "__main__":
 
     input_path = sys.argv[1]
 
-    # --------------------------------------------------------
-    # Step 1: Parse or Read Markdown
-    # --------------------------------------------------------
     if input_path.lower().endswith(".pdf"):
         print("\n" + "=" * 60)
         print("STEP 1: PARSING PDF WITH DOCLING")
@@ -342,38 +349,20 @@ if __name__ == "__main__":
         with open(input_path, "r", encoding="utf-8") as f:
             paper_markdown = f.read()
 
-    # --------------------------------------------------------
-    # Step 2: Extract structured context
-    # --------------------------------------------------------
     print("\n" + "=" * 60)
     print("STEP 2: EXTRACTING PAPER CONTEXT")
     print("=" * 60)
-
     context = extract_paper_context(paper_markdown)
 
-    # --------------------------------------------------------
-    # Step 3: Audit the paper
-    # --------------------------------------------------------
     print("\n" + "=" * 60)
     print("STEP 3: RUNNING AUDIT")
     print("=" * 60)
-
     answers = run_audit(
         paper_context=context,
         paper_markdown=paper_markdown,
     )
 
-    # --------------------------------------------------------
-    # Step 4: Print results
-    # --------------------------------------------------------
     print("\n" + "=" * 60)
     print("FINAL AUDIT")
     print("=" * 60)
-
-    print(
-        json.dumps(
-            answers,
-            indent=2,
-            ensure_ascii=False
-        )
-    )
+    print(json.dumps(answers, indent=2, ensure_ascii=False))

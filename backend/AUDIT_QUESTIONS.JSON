@@ -1,23 +1,35 @@
 {
-  "data_preprocessing": {
-    "question": "Are the dataset, preprocessing steps, and data preparation procedures appropriate for the stated task and sufficiently described to assess them?"
+  "q1_population_scope": {
+    "question": "What population or distribution is the scientific claim about, and why was this population or distribution chosen for the study?"
   },
-  "leakage": {
-    "question": "Is there any indication that information from the test/evaluation data, or information unavailable at prediction time, influenced model training or development?"
+  "q2_ml_motivation": {
+    "question": "What motivated the use of machine learning methods for this task, and how does the problem formulation align with the study goals?"
   },
-  "evaluation": {
-    "question": "Are the reported metrics and evaluation protocol appropriate for the research objective, task, and relevant characteristics of the data?"
+  "q3_data_sources": {
+    "question": "What are the training and evaluation datasets, when and how were they collected, what are their sources and annotation procedures, and how are they documented?"
   },
-  "statistical_analysis": {
-    "question": "Are the statistical methods and uncertainty or significance analyses appropriate for the study design, data, and research question?"
+  "q4_sampling_representativeness": {
+    "question": "From what sampling frame or distribution were the data drawn, and why is that sample representative of the population about which the claim is made?"
   },
-  "baseline_fairness": {
-    "question": "Are the proposed method and comparison methods evaluated under comparable conditions, including data, preprocessing, and evaluation protocol?"
+  "q5_reproducibility": {
+    "question": "Are the dataset, code, model version, software environment, and computing infrastructure clearly reported and sufficiently documented to reproduce the reported results?"
   },
-  "claim_evidence_match": {
-    "question": "Do the scope and strength of the paper's main claims match what the reported experiments and results actually establish?"
+  "q6_preprocessing": {
+    "question": "What data exclusions, missing-data handling, normalization, cleaning, and other preprocessing steps were applied, and are these procedures clearly described and justified?"
   },
-  "reporting_sufficiency": {
-    "question": "Is enough information reported to assess the data, preprocessing, leakage risk, statistical analysis, evaluation, and claim-evidence alignment?"
+  "q7_modeling_details": {
+    "question": "What models were trained, why were these model types selected, and what were the training setup, hyperparameter tuning, and model-selection procedures?"
+  },
+  "q8_baselines_and_evaluation": {
+    "question": "Are the evaluation protocol, train/test splits or cross-validation strategy, baselines, and comparison conditions appropriate and fairly comparable for the task?"
+  },
+  "q9_leakage": {
+    "question": "Is there any risk of data leakage through preprocessing, feature selection, test-set contamination, duplicate samples, or use of information unavailable at prediction time?"
+  },
+  "q10_metrics_uncertainty": {
+    "question": "What metrics, uncertainty estimates, and statistical tests were used, and are they appropriate, clearly defined, and suitable for the task and model-selection decision?"
+  },
+  "q11_claims_generalizability": {
+    "question": "Do the paper's main claims match the evidence presented, and what are the study's limits in terms of external validity, generalizability, and expected failure cases?"
   }
 }

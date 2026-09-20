@@ -25,290 +25,94 @@ import os
 import sys
 import glob
 import json
-import re
+import time
 from dotenv import load_dotenv, find_dotenv
 from google import genai
 from google.genai import types
+from pydantic import BaseModel, Field
 
-# Load environment variables (.env / .env.local from backend/ or project root)
 load_dotenv(find_dotenv())
 load_dotenv(".env")
 load_dotenv("../.env")
-load_dotenv(".env.local")
-load_dotenv("../.env.local")
 
-# ============================================================
-# 1. GEMINI CONFIGURATION
-# ============================================================
-
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-
-
-from pydantic import BaseModel, Field
-
-# ============================================================
-# 2. FINAL MVP SCHEMA (Pydantic Model for google-genai)
-# ============================================================
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 class ExtractionResult(BaseModel):
-    task_type: str = Field(default="not reported", description="ML task type, e.g. classification, regression, road safety mapping")
-    dataset: str = Field(default="not reported", description="Datasets used (e.g. NYPD traffic accident reports, satellite images)")
-    data_split: str = Field(default="not reported", description="Train / validation / test splits")
-    preprocessing: str = Field(default="not reported", description="Data preprocessing or augmentation steps")
-    method: str = Field(default="not reported", description="Proposed methods, model architecture, or algorithms")
-    baselines: str = Field(default="not reported", description="Baseline models or previous works compared against")
-    metrics: str = Field(default="not reported", description="Evaluation metrics (e.g. accuracy, F1 score, MSE)")
-    results: str = Field(default="not reported", description="Key empirical findings and numerical results")
-    main_claims: str = Field(default="not reported", description="Primary claims or contributions made by the authors")
-    limitations: str = Field(default="not reported", description="Explicit limitations or future work mentioned")
+    task_type: str = Field(default="not reported")
+    dataset: str = Field(default="not reported")
+    data_split: str = Field(default="not reported")
+    preprocessing: str = Field(default="not reported")
+    method: str = Field(default="not reported")
+    baselines: str = Field(default="not reported")
+    metrics: str = Field(default="not reported")
+    results: str = Field(default="not reported")
+    main_claims: str = Field(default="not reported")
+    limitations: str = Field(default="not reported")
 
-EXTRACTION_FIELDS = list(ExtractionResult.model_fields.keys())
-
-
-# ============================================================
-# 3. EMPTY DICTIONARY
-# ============================================================
-
-def empty_extraction():
-    """
-    Creates the same dictionary shape for every paper.
-    """
-    return {
-        "task_type": "not reported",
-        "dataset": "not reported",
-        "data_split": "not reported",
-        "preprocessing": "not reported",
-        "method": "not reported",
-        "baselines": "not reported",
-        "metrics": "not reported",
-        "results": "not reported",
-        "main_claims": "not reported",
-        "limitations": "not reported",
-    }
-
-
-# ============================================================
-# 4. SPLIT DOCLING MARKDOWN INTO SECTIONS
-# ============================================================
-
-def split_into_sections(markdown: str):
-    """
-    Splits Docling Markdown using Markdown headings.
-
-    Example:
-        # Introduction
-        text...
-
-        ## Dataset
-        text...
-
-        ## Method
-        text...
-
-    becomes:
-        [
-            ("Introduction", "text..."),
-            ("Dataset", "text..."),
-            ("Method", "text...")
-        ]
-
-    We keep ALL text. Nothing is truncated.
-    """
-    # Matches Markdown headings:
-    # # Heading
-    # ## Heading
-    # ### Heading
-    heading_pattern = re.compile(
-        r"^(#{1,6})\s+(.+?)\s*$",
-        re.MULTILINE
-    )
-
-    matches = list(heading_pattern.finditer(markdown))
-
-    # If Docling produced no headings, treat the whole paper as one section.
-    if not matches:
-        return [("Full Paper", markdown)]
-
-    sections = []
-
-    # Text before the first heading
-    if matches[0].start() > 0:
-        intro = markdown[:matches[0].start()].strip()
-        if intro:
-            sections.append(("Before First Heading", intro))
-
-    for i, match in enumerate(matches):
-        section_title = match.group(2).strip()
-        start = match.end()
-
-        if i + 1 < len(matches):
-            end = matches[i + 1].start()
-        else:
-            end = len(markdown)
-
-        section_text = markdown[start:end].strip()
-        if section_text:
-            sections.append((section_title, section_text))
-
-    return sections
-
-
-# ============================================================
-# 5. EXTRACT ONE SECTION WITH GEMINI
-# ============================================================
-
-def extract_section(section_title: str, section_text: str, client):
-    """
-    Ask Gemini to extract information from ONE section.
-    Gemini returns the same schema every time.
-    """
-    system_instruction = """
-You are extracting factual information from an ML research paper.
-
-Read ONLY the supplied paper section.
-
-Fill the predefined fields with information explicitly stated
-in this section.
-
-Do not guess or infer information.
-
-If a field is not mentioned in this section, write:
-"not reported"
-
-Keep answers concise.
-
-For example:
-- Do not explain what a dataset is.
-- Do not explain what accuracy means.
-- Just extract the information stated by the authors.
-"""
-
-    prompt = f"""
-Paper section: {section_title}
-
-Section content:
-----------------
-{section_text}
-----------------
-
-Extract the relevant information into the predefined schema.
-
-Remember:
-- Only use information explicitly present in this section.
-- Fields unrelated to this section should be "not reported".
-"""
-
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            response_mime_type="application/json",
-            response_schema=ExtractionResult,
-            temperature=0,
-        ),
-    )
-
-    if hasattr(response, "parsed") and response.parsed:
-        if isinstance(response.parsed, BaseModel):
-            return response.parsed.model_dump()
-        return response.parsed
-    return json.loads(response.text)
-
-
-
-# ============================================================
-# 6. MERGE SECTION EXTRACTIONS
-# ============================================================
-
-def merge_extractions(section_results):
-    """
-    Combine the information extracted from all sections.
-
-    If multiple sections contain information for the same field,
-    concatenate the useful information rather than throwing it away.
-    """
-    final = empty_extraction()
-
-    for result in section_results:
-        for field in EXTRACTION_FIELDS:
-            value = result.get(field, "not reported")
-
-            if not value or value == "not reported":
-                continue
-
-            # Nothing has been extracted for this field yet
-            if final[field] == "not reported":
-                final[field] = value
-            # Additional information was found in another section
-            else:
-                if value not in final[field]:
-                    final[field] += "; " + value
-
-    return final
-
-
-# ============================================================
-# 7. MAIN EXTRACTION FUNCTION
-# ============================================================
-
-import time
+def get_gemini_client():
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("Gemini API key not found.")
+    return genai.Client(api_key=api_key)
 
 def extract_paper_context(paper_markdown: str, client=None):
     """
-    Takes the COMPLETE Docling Markdown and extracts information
-    section by section using Gemini with rate-limit retries.
-
-    No arbitrary character truncation is performed.
+    Single-call extraction for free-tier safety.
+    We keep the prompt compact and trim the paper so we don't hit quota.
     """
     if client is None:
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "Gemini API Key not found! Please set GEMINI_API_KEY or GOOGLE_API_KEY in your environment or in backend/.env"
-            )
-        client = genai.Client(api_key=api_key)
+        client = get_gemini_client()
 
-    sections = split_into_sections(paper_markdown)
-    print(f"Found {len(sections)} sections in markdown.")
+    # Keep a conservative size to avoid token overuse on free plan
+    max_chars = 15000
+    compact_markdown = paper_markdown[:max_chars]
 
-    section_results = []
-    for i, (title, text) in enumerate(sections):
-        # Skip references or very brief author headers if text is negligible
-        if title.lower() in ["references", "acknowledgements", "appendix"]:
-            continue
+    prompt = f"""
+You are extracting methodology information from an ML research paper.
 
-        print(f"Extracting section {i + 1}/{len(sections)}: {title}")
-        
-        # Retry loop for rate limits (429)
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                result = extract_section(
-                    section_title=title,
-                    section_text=text,
-                    client=client,
-                )
-                section_results.append(result)
-                time.sleep(1.5)  # respectful delay between calls to stay within free-tier RPM
-                break
-            except Exception as e:
-                err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    wait_time = (attempt + 1) * 8
-                    print(f"  Rate limit hit on '{title}'. Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-                else:
-                    print(f"  Warning: failed extracting section '{title}': {e}")
-                    break
+Use only information explicitly stated in the paper.
+If a field is not mentioned, return "not reported".
 
-    final_context = merge_extractions(section_results)
-    return final_context
+Return valid JSON matching this schema:
+{json.dumps(ExtractionResult.model_json_schema(), indent=2)}
 
+PAPER TEXT:
+{compact_markdown}
+"""
 
+    try:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                response_schema=ExtractionResult,
+            ),
+        )
+
+        if getattr(response, "parsed", None) is not None:
+            if isinstance(response.parsed, BaseModel):
+                return response.parsed.model_dump()
+            return response.parsed
+
+        if getattr(response, "text", None):
+            return json.loads(response.text)
+
+        raise RuntimeError("Gemini returned no parsed output.")
+
+    except Exception as e:
+        err = str(e).lower()
+        if "429" in err or "resource_exhausted" in err or "rate limit" in err:
+            raise RuntimeError(
+                "Gemini rate limit hit during extraction. "
+                "Your free-tier quota is exhausted. "
+                "Reduce request count or use a paid quota."
+            ) from e
+        raise
 
 # ============================================================
-# 8. RUN FROM COMMAND LINE (ON MARKDOWN FILES)
+# CLI entry point
 # ============================================================
 
 if __name__ == "__main__":
@@ -317,39 +121,28 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         md_path = sys.argv[1]
     else:
-        # Default to the newest markdown in outputs/ if not provided
         available_mds = glob.glob("outputs/*.md") + glob.glob("backend/outputs/*.md")
         if available_mds:
             md_path = max(available_mds, key=os.path.getmtime)
             print(f"No markdown file specified. Using latest found: {md_path}")
         else:
             print("Usage: python extract.py <path_to_markdown_file>")
-            print("Example: python extract.py outputs/MAINPAPER.md")
             sys.exit(1)
 
     if not os.path.exists(md_path):
         print(f"Error: File '{md_path}' does not exist.")
         sys.exit(1)
 
-    # -------------------------
-    # Step 1: Read Markdown
-    # -------------------------
     print(f"\nReading Markdown from: {md_path}")
     with open(md_path, "r", encoding="utf-8") as f:
         markdown = f.read()
 
-    # -------------------------
-    # Step 2: Extract structured info via Gemini
-    # -------------------------
     try:
         context = extract_paper_context(markdown)
     except Exception as err:
         print(f"\n[Extraction Error]: {err}")
         sys.exit(1)
 
-    # -------------------------
-    # Step 3: Save and print JSON
-    # -------------------------
     base_name = os.path.splitext(os.path.basename(md_path))[0]
     out_dir = os.path.dirname(md_path) or "outputs"
     json_path = os.path.join(out_dir, f"{base_name}_extracted.json")
@@ -358,5 +151,4 @@ if __name__ == "__main__":
         json.dump(context, out_f, indent=2, ensure_ascii=False)
 
     print(f"\nSuccessfully saved structured extraction to: {json_path}")
-    print("\nFinal extraction:\n")
     print(json.dumps(context, indent=2, ensure_ascii=False))
