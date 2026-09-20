@@ -26,16 +26,16 @@ import sys
 import glob
 import json
 import time
+
 from dotenv import load_dotenv, find_dotenv
-from google import genai
-from google.genai import types
+from groq import Groq
 from pydantic import BaseModel, Field
 
 load_dotenv(find_dotenv())
 load_dotenv(".env")
 load_dotenv("../.env")
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 class ExtractionResult(BaseModel):
     task_type: str = Field(default="not reported")
@@ -49,30 +49,40 @@ class ExtractionResult(BaseModel):
     main_claims: str = Field(default="not reported")
     limitations: str = Field(default="not reported")
 
-def get_gemini_client():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+def get_groq_client():
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise ValueError("Gemini API key not found.")
-    return genai.Client(api_key=api_key)
+        raise ValueError("GROQ_API_KEY not found. Add it to your .env file.")
+    return Groq(api_key=api_key)
+
+def _extract_json_from_text(text: str):
+    text = text.strip()
+
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.strip()
+
+    return json.loads(text)
 
 def extract_paper_context(paper_markdown: str, client=None):
-    """
-    Single-call extraction for free-tier safety.
-    We keep the prompt compact and trim the paper so we don't hit quota.
-    """
     if client is None:
-        client = get_gemini_client()
+        client = get_groq_client()
 
-    # Keep a conservative size to avoid token overuse on free plan
     max_chars = 15000
     compact_markdown = paper_markdown[:max_chars]
 
-    prompt = f"""
+    system_prompt = """
 You are extracting methodology information from an ML research paper.
 
 Use only information explicitly stated in the paper.
 If a field is not mentioned, return "not reported".
 
+Return valid JSON only.
+"""
+
+    user_prompt = f"""
 Return valid JSON matching this schema:
 {json.dumps(ExtractionResult.model_json_schema(), indent=2)}
 
@@ -81,33 +91,24 @@ PAPER TEXT:
 """
 
     try:
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0,
-                response_mime_type="application/json",
-                response_schema=ExtractionResult,
-            ),
+        completion = client.chat.completions.create(
+            model=GROQ_MODEL,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
         )
 
-        if getattr(response, "parsed", None) is not None:
-            if isinstance(response.parsed, BaseModel):
-                return response.parsed.model_dump()
-            return response.parsed
-
-        if getattr(response, "text", None):
-            return json.loads(response.text)
-
-        raise RuntimeError("Gemini returned no parsed output.")
+        content = completion.choices[0].message.content
+        data = _extract_json_from_text(content)
+        return data
 
     except Exception as e:
         err = str(e).lower()
-        if "429" in err or "resource_exhausted" in err or "rate limit" in err:
+        if "rate limit" in err or "429" in err or "too many requests" in err:
             raise RuntimeError(
-                "Gemini rate limit hit during extraction. "
-                "Your free-tier quota is exhausted. "
-                "Reduce request count or use a paid quota."
+                "Groq rate limit hit during extraction. Reduce request frequency or wait before retrying."
             ) from e
         raise
 

@@ -21,52 +21,37 @@ def compute_score(answers: dict) -> dict:
     if not answers:
         return {
             "score": 0,
-            "breakdown": {
-                "supported": 0,
-                "insufficient": 0,
-                "concern": 0,
-                "inconsistency": 0,
-                "total_questions": 0,
-            }
+            "breakdown": {},
+            "message": "No answers provided."
         }
 
     total_points = 0.0
-    counts = {
-        "supported": 0,
-        "insufficient": 0,
-        "concern": 0,
-        "inconsistency": 0,
-    }
-    details = {}
+    total_questions = 0
 
-    for qid, ans in answers.items():
-        judgment = ans.get("judgment", "insufficient")
-        is_verified = ans.get("verified", True)
+    breakdown = {}
+    for qid, answer in answers.items():
+        if not isinstance(answer, dict):
+            continue
 
-        # Fallback to insufficient if not verified or invalid judgment
-        if not is_verified or judgment not in JUDGMENT_WEIGHTS:
-            effective_judgment = "insufficient"
-        else:
-            effective_judgment = judgment
+        judgment = str(answer.get("judgment", "insufficient")).lower()
+        explanation = str(answer.get("explanation", "") or "")
+        quote = str(answer.get("quote", "") or "")
 
-        pts = JUDGMENT_WEIGHTS[effective_judgment]
-        total_points += pts
-        counts[effective_judgment] = counts.get(effective_judgment, 0) + 1
-        details[qid] = {
-            "judgment": effective_judgment,
-            "raw_judgment": judgment,
-            "points": pts,
-            "verified": is_verified,
+        weight = JUDGMENT_WEIGHTS.get(judgment, 50.0)
+
+        total_points += weight
+        total_questions += 1
+
+        breakdown[qid] = {
+            "judgment": judgment,
+            "weight": weight,
+            "quote": quote,
+            "explanation": explanation
         }
 
-    num_questions = len(answers)
-    final_score = int(round(total_points / num_questions)) if num_questions > 0 else 0
+    final_score = round((total_points / total_questions) if total_questions else 0, 2)
 
     return {
-        "score": max(0, min(100, final_score)),
-        "breakdown": {
-            **counts,
-            "total_questions": num_questions,
-            "details": details,
-        }
+        "score": int(final_score),
+        "breakdown": breakdown
     }

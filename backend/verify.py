@@ -62,6 +62,22 @@ def _quote_found_in_source(quote: str, source_text: str) -> bool:
     return False
 
 
+def _normalize_answer_object(qid: str, answer: dict) -> dict:
+    if answer is None:
+        answer = {}
+
+    normalized = {
+        "question_id": qid,
+        "judgment": str(answer.get("judgment", "insufficient")).lower(),
+        "quote": str(answer.get("quote", "") or ""),
+        "explanation": str(answer.get("explanation", "") or "No explanation provided."),
+        "verified": False,
+        "verification_note": "normalized_missing_fields",
+    }
+
+    return normalized
+
+
 def verify_answers(answers: dict, paper_markdown: str) -> dict:
     """
     Runs three checks on the audit output, in order:
@@ -89,11 +105,10 @@ def verify_answers(answers: dict, paper_markdown: str) -> dict:
             }
             continue
 
-        ans = dict(answers[qid])  # copy, don't mutate the original
-        judgment = ans.get("judgment", "")
+        ans = _normalize_answer_object(qid, answers[qid])
+        judgment = ans.get("judgment", "insufficient")
         quote = ans.get("quote", "")
 
-        # Check 2: schema validity
         if judgment not in VALID_JUDGMENTS:
             ans["judgment"] = "insufficient"
             ans["verified"] = False
@@ -101,7 +116,6 @@ def verify_answers(answers: dict, paper_markdown: str) -> dict:
             verified_answers[qid] = ans
             continue
 
-        # Check 3: evidence validity
         if judgment == "insufficient":
             # no quote required - this is a legitimate, honest answer
             ans["verified"] = True

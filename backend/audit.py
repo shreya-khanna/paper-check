@@ -27,13 +27,8 @@ import re
 import time
 
 from dotenv import load_dotenv, find_dotenv
-from google import genai
-from google.genai import types
+from groq import Groq
 from pydantic import BaseModel, Field
-
-# ============================================================
-# 1. LOAD ENVIRONMENT
-# ============================================================
 
 load_dotenv(find_dotenv())
 load_dotenv(".env")
@@ -41,7 +36,7 @@ load_dotenv("../.env")
 load_dotenv(".env.local")
 load_dotenv("../.env.local")
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 JUDGMENTS = [
     "supported",
@@ -49,11 +44,6 @@ JUDGMENTS = [
     "insufficient",
     "inconsistency",
 ]
-
-
-# ============================================================
-# 2. READ QUESTIONS FROM JSON
-# ============================================================
 
 def load_audit_questions():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -64,47 +54,28 @@ def load_audit_questions():
 
     return data
 
-
-# ============================================================
-# 3. OUTPUT SCHEMA
-# ============================================================
-
 class AuditAnswer(BaseModel):
-    question_id: str = Field(
-        description="The ID of the audit question being answered."
-    )
-    judgment: str = Field(
-        description="One of: supported, concern, insufficient, inconsistency"
-    )
-    quote: str = Field(
-        description=(
-            "Exact sentence or sentences from the paper supporting the judgment. "
-            "Empty string if judgment is insufficient."
-        )
-    )
-    explanation: str = Field(
-        description="One or two sentences explaining the judgment."
-    )
+    question_id: str = Field(description="The ID of the audit question being answered.")
+    judgment: str = Field(description="One of: supported, concern, insufficient, inconsistency")
+    quote: str = Field(description="Exact sentence(s) from the paper. Empty string if insufficient.")
+    explanation: str = Field(description="One or two sentences explaining the judgment.")
 
-
-# ============================================================
-# 4. CREATE GEMINI CLIENT
-# ============================================================
-
-def get_gemini_client():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+def get_groq_client():
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise ValueError(
-            "GEMINI_API_KEY not found.\n"
-            "Add it to your .env file:\n\n"
-            "GEMINI_API_KEY=your_key_here"
-        )
-    return genai.Client(api_key=api_key)
+        raise ValueError("GROQ_API_KEY not found. Add it to your .env file.")
+    return Groq(api_key=api_key)
 
+def _extract_json_from_text(text: str):
+    text = text.strip()
 
-# ============================================================
-# 5. SECTION SELECTION FOR RELEVANT PAPER EXCERPTS
-# ============================================================
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.strip()
+
+    return json.loads(text)
 
 QUESTION_SECTION_HINTS = {
     "q1_population_scope": [
@@ -154,9 +125,6 @@ QUESTION_SECTION_HINTS = {
 }
 
 def split_markdown_into_sections(markdown: str):
-    """
-    Split markdown into (heading, text) sections using headings.
-    """
     sections = []
     blocks = re.split(r"(?m)^(#{1,6})\\s+", markdown)
 
@@ -204,18 +172,7 @@ def get_relevant_paper_excerpt(question_id: str, paper_markdown: str, max_chars:
 
     return excerpt
 
-
-# ============================================================
-# 6. RUN AUDIT
-# ============================================================
-
-def run_single_question(
-    client,
-    question_id: str,
-    question: str,
-    paper_context: dict,
-    paper_markdown: str,
-):
+def run_single_question(client, question_id: str, question: str, paper_context: dict, paper_markdown: str):
     relevant_excerpt = get_relevant_paper_excerpt(question_id, paper_markdown)
 
     system_instruction = """
@@ -225,16 +182,17 @@ Use ONLY information explicitly present in the supplied excerpt.
 Do not use outside knowledge, guess, or assume standard practices.
 
 Judgments:
-- supported: the paper clearly provides evidence that the issue is handled correctly
-- concern: the paper provides evidence of a methodological weakness
-- insufficient: the paper does not provide enough information
-- inconsistency: the paper contains a clear internal contradiction or mismatch
+- supported
+- concern
+- insufficient
+- inconsistency
 
 Missing information alone must be classified as insufficient.
 
 For every judgment except insufficient, provide an exact verbatim quote
 from the paper. For insufficient, quote must be an empty string.
 Keep the explanation to one or two sentences.
+Return valid JSON only.
 """
 
     user_content = f"""
@@ -254,57 +212,46 @@ RELEVANT PAPER EXCERPT
 
     for attempt in range(3):
         try:
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=user_content,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                    response_schema=AuditAnswer,
-                    temperature=0,
-                ),
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                temperature=0,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": user_content},
+                ],
             )
 
-            if response.parsed is not None:
-                if isinstance(response.parsed, BaseModel):
-                    return response.parsed.model_dump()
-                return response.parsed
+            content = completion.choices[0].message.content
+            data = _extract_json_from_text(content)
 
-            if response.text:
-                return json.loads(response.text)
+            if "question_id" not in data:
+                data["question_id"] = question_id
 
-            raise RuntimeError(f"Empty response for audit question {question_id}")
+            return data
 
         except Exception as e:
-            error = str(e)
-
-            if "429" in error or "RESOURCE_EXHAUSTED" in error:
+            err = str(e).lower()
+            if "rate limit" in err or "429" in err or "too many requests" in err:
                 wait_time = (attempt + 1) * 10
                 print(f"Rate limit for {question_id}. Waiting {wait_time}s...")
                 time.sleep(wait_time)
-            else:
-                raise
+                continue
+            raise
 
-    raise RuntimeError(
-        f"Failed to answer audit question {question_id} after retries"
-    )
-
+    raise RuntimeError(f"Failed to answer audit question {question_id} after retries")
 
 def run_audit(paper_context: dict, paper_markdown: str, client=None) -> dict:
     if client is None:
-        client = get_gemini_client()
+        client = get_groq_client()
 
     AUDIT_QUESTIONS = load_audit_questions()
     answers = {}
 
-    print("\nRunning one Gemini request per audit question...")
+    print("\nRunning one Groq request per audit question...")
     print(f"Paper length: {len(paper_markdown):,} characters")
     print(f"Number of questions: {len(AUDIT_QUESTIONS)}")
 
-    for index, (question_id, question_data) in enumerate(
-        AUDIT_QUESTIONS.items(),
-        start=1,
-    ):
+    for index, (question_id, question_data) in enumerate(AUDIT_QUESTIONS.items(), start=1):
         print(f"[{index}/{len(AUDIT_QUESTIONS)}] Auditing {question_id}...")
 
         answer = run_single_question(
@@ -320,11 +267,6 @@ def run_audit(paper_context: dict, paper_markdown: str, client=None) -> dict:
 
     return answers
 
-
-# ============================================================
-# 7. COMMAND LINE ENTRY POINT
-# ============================================================
-
 if __name__ == "__main__":
     from pdf_parser import parse_paper
     from extract import extract_paper_context
@@ -337,32 +279,13 @@ if __name__ == "__main__":
     input_path = sys.argv[1]
 
     if input_path.lower().endswith(".pdf"):
-        print("\n" + "=" * 60)
-        print("STEP 1: PARSING PDF WITH DOCLING")
-        print("=" * 60)
         parsed = parse_paper(input_path)
         paper_markdown = parsed["markdown"]
     else:
-        print("\n" + "=" * 60)
-        print(f"STEP 1: READING MARKDOWN FROM {input_path}")
-        print("=" * 60)
         with open(input_path, "r", encoding="utf-8") as f:
             paper_markdown = f.read()
 
-    print("\n" + "=" * 60)
-    print("STEP 2: EXTRACTING PAPER CONTEXT")
-    print("=" * 60)
     context = extract_paper_context(paper_markdown)
+    answers = run_audit(paper_context=context, paper_markdown=paper_markdown)
 
-    print("\n" + "=" * 60)
-    print("STEP 3: RUNNING AUDIT")
-    print("=" * 60)
-    answers = run_audit(
-        paper_context=context,
-        paper_markdown=paper_markdown,
-    )
-
-    print("\n" + "=" * 60)
-    print("FINAL AUDIT")
-    print("=" * 60)
     print(json.dumps(answers, indent=2, ensure_ascii=False))
